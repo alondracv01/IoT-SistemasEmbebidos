@@ -13,7 +13,7 @@
 #include <time.h>
 
 
-#define EXAMPLE_ESP_WIFI_SSID      "TAMARA"
+#define EXAMPLE_ESP_WIFI_SSID      "TAMARA Y ALONDRA"
 #define EXAMPLE_ESP_WIFI_PASS      "12345678"
 #define EXAMPLE_MAX_STA_CONN       10
 
@@ -89,15 +89,29 @@ static esp_err_t resp_dir_html(httpd_req_t *req)
                           "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" /> "
                           "</head>"
 
-                          "<body style=\"margin-top:70px;height:2500px;\">"
+                          "<body style=\"margin-top:70px;height:2500px;background-color:#FFE4E1;\">"
 
-                          "<h1 style=\"text-align:center;padding-bottom: 0.7em;  font-family: \"Raleway\", sans-serif;\"><span style=\"font-weight: 300;word-spacing: 3px;line-height: 2em;padding-bottom: 0.35em;\">Proyecto Sistemas Embebidos</span>Temperatura de una habitacion</h1>"
-                          "<label for=\"comandos\">Temperatura de la habiatacion:</label>"
+                          "<h1 style=\"text-align:center;padding-bottom: 0.7em;  font-family: \"Raleway\", sans-serif;\"><span style=\"font-weight: 300;word-spacing: 3px;line-height: 2em;padding-bottom: 0.35em;\">Proyecto Sistemas Embebidos</span><br>Temperatura de una habitacion</h1>"
+                          "<div align='center'>"
+                          "<table>"
+                          "<tr>"
+                          "<td style=\"padding:30px;vertical-align:top;\">"
+                          "<h3>Estado deseado en la habitacion</h3>"
+                          "<label for=\"comandos\">Temperatura deseada en la habitacion:</label><br><br>"
                           "<form method='get'>"
-                          "<input type=\"text\" id=\"fname\" name=\"fname\"><br>"
-                          "<button type=\"submit\" onclick='dirigir(this.form)'>Enviar comando</button>"
+                          "<input type=\"text\" id=\"fname\" name=\"fname\" style=\"background-color:#FFF0F5;border-color:#FFC0CB;\"><br><br>"
+                          "<button type=\"submit\" onclick='dirigir(this.form)' style=\"background-color:#FF69B4;border-color:#FF69B4;\">Enviar comando</button><br><br>"
                           "</form>"
                           "<img src=\"./img/temperatura.png\" alt=\"Temperatura\" style=\"width:500px;height:600px;\">"
+                          "</td>"
+                          "<td style=\"padding:30px;vertical-align:top;\">"
+                          "<h3>Estado actual en la habitacion</h3>"
+                          "<label>Temperatura actual en la habitacion:</label><br><br>"
+                          "<label>Mini split:</label>"
+                          "</td>"
+                          "</tr>"
+                          "</table>"
+                          "</div>"
 
                           "<script>"
                             "function dirigir(form)"
@@ -369,7 +383,7 @@ void app_main(void)
 #include "freertos/task.h"
 #include "driver/gpio.h"
 
-#define EXAMPLE_ESP_WIFI_SSID      "TAMARA"
+#define EXAMPLE_ESP_WIFI_SSID      "TAMARA Y ALONDRA"
 #define EXAMPLE_ESP_WIFI_PASS      "12345678"
 #define EXAMPLE_MAX_STA_CONN        10
 
