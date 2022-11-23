@@ -99,7 +99,7 @@ static esp_err_t resp_dir_html(httpd_req_t *req)
                           "<h3>Estado deseado en la habitacion</h3>"
                           "<label for=\"comandos\">Temperatura deseada en la habitacion:</label><br><br>"
                           "<form method='get'>"
-                          "<input type=\"text\" id=\"fname\" name=\"fname\" style=\"background-color:#FFF0F5;border-color:#FFC0CB;\"><br><br>"
+                          "<input type=\"number\" id=\"fname\" name=\"fname\" style=\"background-color:#FFF0F5;border-color:#FFC0CB;\"><br><br>"
                           "<button type=\"submit\" onclick='dirigir(this.form)' style=\"background-color:#FF69B4;border-color:#FF69B4;\">Enviar comando</button><br><br>"
                           "</form>"
                           "<img src=\"./img/temperatura.png\" alt=\"Temperatura\" style=\"width:500px;height:600px;\">"
