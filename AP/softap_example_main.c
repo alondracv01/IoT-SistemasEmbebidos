@@ -20,15 +20,146 @@
 #define LED_GPIO (2)
 #define MAX 50
 
+#define CABECERA 0x5A
+#define FIN 0xB2
+
+#define DEFAULT_COMMAND 0x30 // '0'
+#define DEFAULT_LENGTH 0x34  // '4'
+#define DEFAULT_DATA "0000"
+
 char temperatura[4] = "35";
 char estado [25] = "No encendido):";
 
 static const char *TAG = "softAP_WebServer";
 
+struct paquete{
+    uint8_t  cabecera;
+    uint8_t  comando;
+    uint8_t  longitud;
+    char     dato1;
+    char     dato2;
+    char     dato3;
+    char     dato4;
+    uint8_t  fin;
+    uint8_t  CRC32_1;
+    uint8_t  CRC32_2;
+    uint8_t  CRC32_3;
+    uint8_t  CRC32_4;
+};
+
+struct paquete* formar_paquete(uint8_t cabecera, uint8_t com, uint8_t length, char data[], uint8_t end, uint32_t crc){
+    struct paquete *p;
+    p=(struct paquete*)malloc(sizeof(struct paquete));
+    p->cabecera = cabecera;
+    p->comando = com;
+    p->longitud = length;
+    p->dato1 = data[0];
+    p->dato2 = data[1];
+    p->dato3 = data[2];
+    p->dato4 = data[3];
+    p->fin = end;
+    p->CRC32_1 =  crc & 0xff;
+    p->CRC32_2 = (crc & 0xff00)>>8;
+    p->CRC32_3 = (crc & 0xff0000)>>16;
+    p->CRC32_4 = (crc & 0xff000000)>>24;
+    return (p);
+}
+
 void invertir_estado_led(uint8_t led_state){
     gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
     gpio_set_level(LED_GPIO, !led_state);
 } 
+
+void myItoa(uint16_t number, char* str, uint8_t base){
+    //convierte un valor numerico en una cadena de texto
+    char *str_aux = str, n, *end_ptr, ch;
+    int i=0, j=0;
+
+    do{
+        n=number % base;
+        number /= base;
+        n += '0';
+        if(n >'9')
+            n += 7;
+        *(str++)=n;
+        j++;
+    }while(number>0);
+
+    *(str--)='\0';
+    end_ptr = str;
+  
+    for (i = 0; i < j / 2; i++) {
+        ch = *end_ptr;
+        *(end_ptr--) = *str_aux;
+        *(str_aux++) = ch;
+    }
+}
+
+uint32_t crc32b(char *message) {
+   int i, j;
+   unsigned int byte, crc, mask;
+   i = 0;
+   crc = 0xFFFFFFFF;
+   while (message[i]) {
+      byte = message[i];            // Get next byte.
+      crc = crc ^ byte;
+      for (j = 7; j >= 0; j--) {    // Do eight times.
+         mask = -(crc & 1);
+         crc = (crc >> 1) ^ (0xEDB88320 & mask);
+      }
+      i++; 
+   }
+   return ~crc;
+}
+
+void preprocessing_string_for_crc32(char *str, char *datos, uint8_t comando){
+    *str = CABECERA;
+    *(++str) = comando;
+    *(++str) = strlen(datos) + '0';    
+    while(*datos){
+        *(++str) = *(datos++);
+    }
+    *(++str) = FIN;
+    *(++str) = 0;
+}
+
+uint8_t package_validation(char *str, char *datos, char *comando){
+    int contador=0, data_length=0;
+    uint32_t crc_recibido = 0, crc_calculado;
+    char crc32_aux[13]; //MAX
+    if (str[0] != CABECERA){ 
+        return 0;
+    }else{ //COMANDO
+        if (str[1] != 0 && str[1] != 1 && str[1] != 2){
+            return 0;
+        } else { //LONGITUD
+            if (str[2] != '0') {
+                data_length =  str[2] - '0'; 
+                //DATOS
+                while (contador < data_length){
+                    datos[contador] = str[contador+3];
+                    contador++;
+                }
+                datos[contador] = '\0';
+                contador = 0;
+            } else{
+                data_length = 1;
+            }
+            if (str[data_length+3] != FIN){
+                return 0;
+            }else{
+                crc_recibido |= (str[data_length+4] | str[data_length+5] << 8 | str[data_length+6] << 16  | str[data_length+7] << 24);
+                preprocessing_string_for_crc32(crc32_aux, datos, str[1]);
+                crc_calculado = crc32b(crc32_aux);
+                if(crc_recibido!=crc_calculado){
+                    return 0;
+                }
+            }
+        }
+    }
+    *comando = str[1] + '0';
+    return 1;
+}
 
 void delayMs(uint16_t ms)
 {
@@ -57,7 +188,6 @@ static esp_err_t resp_dir_html(httpd_req_t *req)
                         "<input type=\"number\" id=\"fname\" name=\"fname\" style=\"background-color:#FFF0F5;border-color:#FFC0CB;\"><br><br>"
                         "<button type=\"submit\" onclick='dirigir(this.form)' style=\"background-color:#FF69B4;border-color:#FF69B4;\">Enviar comando</button><br><br>"
                         "</form>"
-                        "<img src=\"./img/temperatura.png\" alt=\"Temperatura\" style=\"width:500px;height:600px;\">"
                         "</td>"
                         "<td style=\"padding:30px;vertical-align:top;\">"
                         "<h3>Estado actual en la habitacion</h3>"
@@ -77,6 +207,9 @@ static esp_err_t resp_dir_html(httpd_req_t *req)
                         "</div>"
 
                         "<script>"
+                            "setTimeout(function(){"
+                                "window.location.reload(1);"
+                            "}, 5000);"
                             "function dirigir(form)"
                             "{"
                                 "if(form.comandos.value=='1')"
