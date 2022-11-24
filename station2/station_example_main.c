@@ -33,10 +33,14 @@
 #define READ_BUF_SIZE     (2048)
 #define BUF_SIZE          (2048)
 
-#define LED_CALEFACCION   (13)
+#define LED_CALEFACCION   (2)
 #define LED_REFRIGERACION (14)
 
 #define MAX 15
+
+#define DEFAULT_COMMAND 0x30 // '0'
+#define DEFAULT_LENGTH 0x34  // '4'
+#define DEFAULT_DATA "0000"
 
 // FreeRTOS event group to signal when we are connected
 static EventGroupHandle_t s_wifi_event_group;
@@ -47,7 +51,6 @@ static EventGroupHandle_t s_wifi_event_group;
 static const char *TAG = "wifi station";
 
 static int s_retry_num = 0;
-char estado_control_temperatura[50] = "Sin iniciar";
 
 struct paquete{
     uint8_t  cabecera;
@@ -210,15 +213,15 @@ void preprocessing_string_for_crc32(char *str, char *datos, uint8_t comando){
     *(++str) = 0;
 }
 
-uint8_t package_validation(char *str, char *datos, char *comando){
+uint8_t package_validation(char *str, char *datos, uint8_t *comando){
     int contador=0, data_length=0;
     uint32_t crc_recibido = 0, crc_calculado;
     char crc32_aux[13]; //MAX
     if (str[0] != CABECERA){ 
-        return 0;
+        //return 0;
     }else{ //COMANDO
-        if (str[1] != '0' && str[1] != '1' && str[1] != '2'){
-            return 0;
+        if (str[1] != 0x10 && str[1] != 0x11 && str[1] != 0x12){
+            //return 0;
         } else { //LONGITUD
             if (str[2] != '0') {
                 data_length =  str[2] - '0'; 
@@ -233,13 +236,13 @@ uint8_t package_validation(char *str, char *datos, char *comando){
                 data_length = 1;
             }
             if (str[data_length+3] != FIN){
-                return 0;
+                //return 0;
             }else{
                 crc_recibido |= (str[data_length+4] | str[data_length+5] << 8 | str[data_length+6] << 16  | str[data_length+7] << 24);
                 preprocessing_string_for_crc32(crc32_aux, datos, str[1]);
                 crc_calculado = crc32b(crc32_aux);
                 if(crc_recibido!=crc_calculado){
-                    return 0;
+                    //return 0;
                 }
             }
         }
@@ -405,12 +408,18 @@ static void rest_post (char *data){
 
 void app_main(void)
 {
-    char comando, paquete[13], datos[5];
+    char paquete[13], datos[5];
+    uint8_t comando = 0x10;
+    uint32_t crc32_calculado;
+    char str_aux_for_crc32[13], paquete_recibido[MAX], datos_recibidos[5];
+    int com = 1;
+
+    struct paquete * package;
     
     UartInit(0, UARTS_BAUD_RATE, 8, 0, 1, UART_TX_PIN,   UART_RX_PIN);
     UartInit(2, UARTS_BAUD_RATE, 8, 0, 1, UART_TX_PIN_2, UART_RX_PIN_2);
 
-    /*//Initialize NVS
+    //Initialize NVS
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
       ESP_ERROR_CHECK(nvs_flash_erase());
@@ -419,29 +428,44 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
-    wifi_init_sta();*/
+    wifi_init_sta();
 
     while (1){
         UartGets(2, paquete);
 
+        /*switch (com){ 
+            case 1: comando = 0x10;
+                break;
+            case 2: comando = 0x11;
+                break;
+            case 3: comando = 0x12;
+                break;
+            default: break;
+        }
+        com = com == 3 ? 1 : com + 1;*/
+
         if(package_validation(paquete, datos, &comando)){
-            ESP_LOGE(TAG, "\nComando: %c", comando);
+          //  ESP_LOGE(TAG, "\nComando: %c", comando);
             ESP_LOGE(TAG, "paquete recibido!!\n");
-            if(comando == '0'){
+            if(comando == 0x10){
                 apagar_sistemas_de_ajuste_de_temperatura();
-                strcpy(estado_control_temperatura, "No encendido");
-            }else if(comando == '1'){
+                ESP_LOGE(TAG, "Apagar sistemas\n");
+            }else if(comando == 0x11){
                 encender_refrigeracion();
-                strcpy(estado_control_temperatura, "Refrigeracion encendida");
-            }else if(comando == '2'){
+                ESP_LOGE(TAG, "prender refrigeracion\n");
+            }else if(comando == 0x12){
                 encender_calefaccion();
-                strcpy(estado_control_temperatura, "Calefaccion encendida");
+                ESP_LOGE(TAG, "prender calefaccion\n");
             }
-            ESP_LOGE(TAG, "Mensaje a enviar: %s", estado_control_temperatura);
         } else {
             ESP_LOGI(TAG,"paquete malformado\n");
         }
-        //rest_post(estado_control_temperatura);
+
+        preprocessing_string_for_crc32(str_aux_for_crc32, DEFAULT_DATA, comando);
+        crc32_calculado = crc32b(str_aux_for_crc32);
+        package = formar_paquete(CABECERA, comando, DEFAULT_LENGTH, DEFAULT_DATA, FIN, crc32_calculado); 
+        printf("\nComando: %x", comando);
+        rest_post(package);
         delayMs(3000);
     }
 }
