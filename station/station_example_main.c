@@ -1,7 +1,5 @@
 /* WiFi station Example
-
    This example code is in the Public Domain (or CC0 licensed, at your option.)
-
    Unless required by applicable law or agreed to in writing, this
    software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
    CONDITIONS OF ANY KIND, either express or implied.
@@ -13,20 +11,29 @@
 #include "esp_system.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
+#include "esp_timer.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
-
+#include "esp_http_client.h"
+#include "driver/gpio.h"
 #include "lwip/err.h"
 #include "lwip/sys.h"
+#include <time.h>
 
+#include "dht11.h"
 /* The examples use WiFi configuration that you can set via project configuration menu
-
    If you'd rather not, just change the below entries to strings with
    the config you want - ie #define EXAMPLE_WIFI_SSID "mywifissid"
 */
-#define EXAMPLE_ESP_WIFI_SSID      "TAMARA"
+#define EXAMPLE_ESP_WIFI_SSID      "TAMARA Y ALONDRA"
 #define EXAMPLE_ESP_WIFI_PASS      "12345678"
-#define EXAMPLE_ESP_MAXIMUM_RETRY  5
+#define EXAMPLE_ESP_MAXIMUM_RETRY  10
+
+char temperatura[4] = "40";
+static gpio_num_t dht_gpio;
+static int64_t last_read_time = -2000000;
+static struct dht11_reading last_read;
+
 
 /* FreeRTOS event group to signal when we are connected*/
 static EventGroupHandle_t s_wifi_event_group;
@@ -40,6 +47,136 @@ static EventGroupHandle_t s_wifi_event_group;
 static const char *TAG = "wifi station";
 
 static int s_retry_num = 0;
+
+void myItoa(uint16_t number, char* str, uint8_t base)
+{//convierte un valor numerico en una cadena de texto
+    char *str_aux = str, n, *end_ptr, ch;
+    int i=0, j=0;
+
+    do{
+        n=number % base;
+        number=number/base;
+        n+='0';
+        if(n>'9')
+            n=n+7;
+        *(str++)=n;
+        j++;
+    }while(number>0);
+
+    *(str--)='\0';
+    
+    end_ptr = str;
+  
+    for (i = 0; i < j / 2; i++) {
+        ch = *end_ptr;
+        *end_ptr = *str_aux;
+        *str_aux = ch;
+          str_aux++;
+        end_ptr--;
+    }
+}
+
+void enviar_temperatura(char *cade){
+    srand((unsigned int)time(NULL));
+    int num = rand() % 100;
+    myItoa(num, cade, 10);
+}
+
+static int _waitOrTimeout(uint16_t microSeconds, int level) {
+    int micros_ticks = 0;
+    while(gpio_get_level(dht_gpio) == level) { 
+        if(micros_ticks++ > microSeconds) 
+            return DHT11_TIMEOUT_ERROR;
+        ets_delay_us(1);
+    }
+    return micros_ticks;
+}
+
+static int _checkCRC(uint8_t data[]) {
+    if(data[4] == (data[0] + data[1] + data[2] + data[3]))
+        return DHT11_OK;
+    else
+        return DHT11_CRC_ERROR;
+}
+
+static void _sendStartSignal() {
+    gpio_set_direction(dht_gpio, GPIO_MODE_OUTPUT);
+    gpio_set_level(dht_gpio, 0);
+    ets_delay_us(20 * 1000);
+    gpio_set_level(dht_gpio, 1);
+    ets_delay_us(40);
+    gpio_set_direction(dht_gpio, GPIO_MODE_INPUT);
+}
+
+static int _checkResponse() {
+    /* Wait for next step ~80us*/
+    if(_waitOrTimeout(80, 0) == DHT11_TIMEOUT_ERROR)
+        return DHT11_TIMEOUT_ERROR;
+
+    /* Wait for next step ~80us*/
+    if(_waitOrTimeout(80, 1) == DHT11_TIMEOUT_ERROR) 
+        return DHT11_TIMEOUT_ERROR;
+
+    return DHT11_OK;
+}
+
+static struct dht11_reading _timeoutError() {
+    struct dht11_reading timeoutError = {DHT11_TIMEOUT_ERROR, -1, -1};
+    return timeoutError;
+}
+
+static struct dht11_reading _crcError() {
+    struct dht11_reading crcError = {DHT11_CRC_ERROR, -1, -1};
+    return crcError;
+}
+
+void DHT11_init(gpio_num_t gpio_num) {
+    /* Wait 1 seconds to make the device pass its initial unstable status */
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    dht_gpio = gpio_num;
+}
+
+struct dht11_reading DHT11_read() {
+    /* Tried to sense too son since last read (dht11 needs ~2 seconds to make a new read) */
+    if(esp_timer_get_time() - 2000000 < last_read_time) {
+        return last_read;
+    }
+
+    last_read_time = esp_timer_get_time();
+
+    uint8_t data[5] = {0,0,0,0,0};
+
+    _sendStartSignal();
+
+    if(_checkResponse() == DHT11_TIMEOUT_ERROR)
+        return last_read = _timeoutError();
+    
+    /* Read response */
+    for(int i = 0; i < 40; i++) {
+        /* Initial data */
+        if(_waitOrTimeout(50, 0) == DHT11_TIMEOUT_ERROR)
+            return last_read = _timeoutError();
+                
+        if(_waitOrTimeout(70, 1) > 28) {
+            /* Bit received was a 1 */
+            data[i/8] |= (1 << (7-(i%8)));
+        }
+    }
+
+    if(_checkCRC(data) != DHT11_CRC_ERROR) {
+        last_read.status = DHT11_OK;
+        last_read.temperature = data[2];
+        last_read.humidity = data[0];
+        return last_read;
+    } else {
+        return last_read = _crcError();
+    }
+}
+
+void delayMs(uint16_t ms)
+{
+    vTaskDelay(ms / portTICK_PERIOD_MS);
+}
 
 static void event_handler(void* arg, esp_event_base_t event_base,
                                 int32_t event_id, void* event_data)
@@ -135,9 +272,56 @@ void wifi_init_sta(void)
     vEventGroupDelete(s_wifi_event_group);
 }
 
+esp_err_t client_event_get_handler (esp_http_client_event_handle_t evt)
+{
+    switch (evt->event_id)
+    {
+    case HTTP_EVENT_ON_DATA:
+        ESP_LOGI(TAG, "HTTP_EVENT_ON_DATA: %.*s\n", evt->data_len, (char *)evt->data);
+        break;
+    
+    default:
+        break;
+    }
+    return ESP_OK;
+}
+
+static void rest_post (char *data)
+{
+    esp_http_client_config_t config_post ={
+        .url = "http://192.168.4.1/proyecto",
+        .method = HTTP_METHOD_POST,
+        .event_handler = client_event_get_handler,
+        .cert_pem = NULL,
+        .is_async = true,
+        .timeout_ms = 5000};
+
+    esp_http_client_handle_t client = esp_http_client_init(&config_post);
+    esp_err_t err;
+    esp_http_client_set_post_field(client, data, strlen(data));
+    while (1) {
+        err = esp_http_client_perform(client);
+        if (err != ESP_ERR_HTTP_EAGAIN) {
+            break;
+        }
+    }
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "HTTPS Status = %d, content_length = %d",
+                esp_http_client_get_status_code(client),
+                esp_http_client_get_content_length(client));
+    } else {
+        ESP_LOGE(TAG, "Error perform http request %s", esp_err_to_name(err));
+    }
+    esp_http_client_cleanup(client);
+}
+
+
 void app_main(void)
 {
-    //Initialize NVS
+    int temp;
+    DHT11_init(GPIO_NUM_16);
+
+    /*//Initialize NVS
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
       ESP_ERROR_CHECK(nvs_flash_erase());
@@ -146,5 +330,15 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
-    wifi_init_sta();
+    wifi_init_sta();*/
+
+    while (1)
+    {
+        temp = DHT11_read().temperature;
+        myItoa(temp, temperatura, 10);
+        printf("Temperature is %d \n", temp);
+        printf("Temperature is %s \n", temperatura);
+        //rest_post(temperatura);
+        delayMs(1000);
+    }
 }
