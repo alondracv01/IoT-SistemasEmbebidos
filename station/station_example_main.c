@@ -33,7 +33,9 @@
 #define EXAMPLE_ESP_MAXIMUM_RETRY  10
 
 char temperatura[10] = "40";
+char temperaturaDeseada[4] = "28";
 char humedad[10] = "40";
+uint16_t tempdes = 0;
 
 /* FreeRTOS event group to signal when we are connected*/
 static EventGroupHandle_t s_wifi_event_group;
@@ -192,14 +194,14 @@ void preprocessing_string_for_crc32(char *str, char *datos, uint8_t comando){
     *(++str) = 0;
 }
 
-uint8_t package_validation(char *str, char *datos, char *comando){
+uint8_t package_validation(char *str, char *datos, uint8_t *comando){
     int contador=0, data_length=0;
     uint32_t crc_recibido = 0, crc_calculado;
     char crc32_aux[13]; //MAX
     if (str[0] != CABECERA){ 
         return 0;
     }else{ //COMANDO
-        if (str[1] != 0 && str[1] != 1 && str[1] != 2){
+        if (str[1] != 0x13){
             return 0;
         } else { //LONGITUD
             if (str[2] != '0') {
@@ -221,12 +223,12 @@ uint8_t package_validation(char *str, char *datos, char *comando){
                 preprocessing_string_for_crc32(crc32_aux, datos, str[1]);
                 crc_calculado = crc32b(crc32_aux);
                 if(crc_recibido!=crc_calculado){
-                    return 0;
+                    //return 0;
                 }
             }
         }
     }
-    *comando = str[1] + '0';
+    *comando = str[1];
     return 1;
 }
 
@@ -256,6 +258,19 @@ void myItoa(uint16_t number, char* str, uint8_t base)
           str_aux++;
         end_ptr--;
     }
+}
+
+uint16_t myAtoi(char *str){
+    uint16_t res = 0;
+    while(*str){
+        if((*str >= 48) && (*str <= 57)){
+            res *= 10;
+            res += *(str++)-48;
+        }
+        else
+            break;
+    }
+    return res;
 }
 
 void enviar_temperatura(char *cade){
@@ -395,6 +410,9 @@ static void rest_post (char *data)
         ESP_LOGI(TAG, "HTTPS Status = %d, content_length = %d",
                 esp_http_client_get_status_code(client),
                 esp_http_client_get_content_length(client));
+        //strcpy(temperaturaDeseada, esp_http_client_get_status_code(client));
+        //tempdes = myAtoi(temperaturaDeseada);
+        //ESP_LOGE(TAG, "Temperatura deseada %d", tempdes);
     } else {
         ESP_LOGE(TAG, "Error perform http request %s", esp_err_to_name(err));
     }
@@ -404,7 +422,7 @@ static void rest_post (char *data)
 
 void app_main(void)
 {
-    int temp;
+    char temp[] = "0000";
 
     setDHTPin(4);
     printf("Starting DHT measurement!\n");
@@ -432,13 +450,24 @@ void app_main(void)
 
     while (1)
     {
+        /*if (tempdes == getTemp())
+        {
+            comando = 0x10;
+        } else if (tempdes < getTemp())
+        {
+            comando = 0x11;
+        } else{
+            comando = 0x12;
+        }*/
+        
+        
         //MANDAR
         switch (com){ 
-            case 1: comando = '0';
+            case 1: comando = 0x10;
                 break;
-            case 2: comando = '1';
+            case 2: comando = 0x11;
                 break;
-            case 3: comando = '2';
+            case 3: comando = 0x12;
                 break;
             default: break;
         }
@@ -446,13 +475,18 @@ void app_main(void)
         preprocessing_string_for_crc32(str_aux_for_crc32, DEFAULT_DATA, comando);
         crc32_calculado = crc32b(str_aux_for_crc32);
         package = formar_paquete(CABECERA, comando, DEFAULT_LENGTH, DEFAULT_DATA, FIN, crc32_calculado); 
-        printf("\nComando: %x", comando);
-        UartPuts(2, package); 
+        UartPuts(2, package);
+        printf("\nComando: %x\n", comando); 
         com = com == 3 ? 1 : com + 1;
-
+        
         myItoa(getTemp(), temperatura, 10);
-        //printf("Temperature reading %s\n",temperatura);
-        rest_post(temperatura);
+        preprocessing_string_for_crc32(str_aux_for_crc32, temperatura, 0x13);
+        crc32_calculado = crc32b(str_aux_for_crc32);
+        temp[2] = temperatura[0];
+        temp[3] = temperatura[1];
+        package = formar_paquete(CABECERA, 0x13, DEFAULT_LENGTH, &temp, FIN, crc32_calculado);
+        printf("Temperature reading %s\n",temperatura);
+        rest_post(package);
         delayMs(3000);
     }
 }
