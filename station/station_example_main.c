@@ -16,11 +16,14 @@
 #include "nvs_flash.h"
 #include "esp_http_client.h"
 #include "driver/gpio.h"
+#include "driver/uart.h"
 #include "lwip/err.h"
 #include "lwip/sys.h"
 #include <time.h>
-
+#include "sdkconfig.h"
+#include "rom/ets_sys.h"
 #include "dht11.h"
+#include "mUart.h"
 /* The examples use WiFi configuration that you can set via project configuration menu
    If you'd rather not, just change the below entries to strings with
    the config you want - ie #define EXAMPLE_WIFI_SSID "mywifissid"
@@ -29,11 +32,8 @@
 #define EXAMPLE_ESP_WIFI_PASS      "12345678"
 #define EXAMPLE_ESP_MAXIMUM_RETRY  10
 
-char temperatura[4] = "40";
-static gpio_num_t dht_gpio;
-static int64_t last_read_time = -2000000;
-static struct dht11_reading last_read;
-
+char temperatura[10] = "40";
+char humedad[10] = "40";
 
 /* FreeRTOS event group to signal when we are connected*/
 static EventGroupHandle_t s_wifi_event_group;
@@ -44,9 +44,191 @@ static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
 
+#define DHT_GPIO GPIO_NUM_16
+
+#define UART_RX_PIN     (3)
+#define UART_TX_PIN     (1)
+
+#define UART_RX_PIN_2    (16)
+#define UART_TX_PIN_2    (17)
+
+#define UARTS_BAUD_RATE         (115200)
+#define TASK_STACK_SIZE         (1048)
+#define READ_BUF_SIZE           (1024)
+
+#define BUF_SIZE (1024)
+#define LED_GPIO (2)
+
+#define MAX 50
+
+#define CABECERA 0x5A
+#define FIN 0xB2
+
+#define DEFAULT_COMMAND 0x30 // '0'
+#define DEFAULT_LENGTH 0x34  // '4'
+#define DEFAULT_DATA "0000"
+
+
 static const char *TAG = "wifi station";
 
 static int s_retry_num = 0;
+
+struct paquete{
+    uint8_t  cabecera;
+    uint8_t  comando;
+    uint8_t  longitud;
+    char     dato1;
+    char     dato2;
+    char     dato3;
+    char     dato4;
+    uint8_t  fin;
+    uint8_t  CRC32_1;
+    uint8_t  CRC32_2;
+    uint8_t  CRC32_3;
+    uint8_t  CRC32_4;
+};
+
+struct paquete* formar_paquete(uint8_t cabecera, uint8_t com, uint8_t length, char data[], uint8_t end, uint32_t crc){
+    struct paquete *p;
+    p=(struct paquete*)malloc(sizeof(struct paquete));
+    p->cabecera = cabecera;
+    p->comando = com;
+    p->longitud = length;
+    p->dato1 = data[0];
+    p->dato2 = data[1];
+    p->dato3 = data[2];
+    p->dato4 = data[3];
+    p->fin = end;
+    p->CRC32_1 =  crc & 0xff;
+    p->CRC32_2 = (crc & 0xff00)>>8;
+    p->CRC32_3 = (crc & 0xff0000)>>16;
+    p->CRC32_4 = (crc & 0xff000000)>>24;
+    return (p);
+}
+
+void UartInit(uart_port_t uart_num, uint32_t baudrate, uint8_t size, uint8_t parity, uint8_t stop, uint8_t txPin, uint8_t rxPin){
+    uart_config_t uart_config = {
+        .baud_rate = (int) baudrate,
+        .data_bits = (uart_word_length_t)(size-5),
+        .parity    = (uart_parity_t)parity,
+        .stop_bits = (uart_stop_bits_t)stop,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_APB,
+    };
+
+    ESP_ERROR_CHECK(uart_driver_install(uart_num, READ_BUF_SIZE, READ_BUF_SIZE, 0, NULL, 0));
+    ESP_ERROR_CHECK(uart_param_config(uart_num, &uart_config));
+    ESP_ERROR_CHECK(uart_set_pin(uart_num, txPin, rxPin,
+                                 UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+}
+
+void delayMs(uint16_t ms){
+    vTaskDelay(ms / portTICK_PERIOD_MS);
+}
+
+void UartPutchar(uart_port_t uart_num, char c){
+    uart_write_bytes(uart_num, &c, sizeof(c));
+}
+
+char UartGetchar(uart_port_t uart_num){
+    char c;
+    uart_read_bytes(uart_num, &c, sizeof(c), 0);
+    return c;
+} 
+
+void UartPuts(uart_port_t uart_num, char *str){
+    while(*str!='\0'){   
+        UartPutchar(uart_num,*(str++));
+    }
+}
+
+void UartGets(uart_port_t uart_num, char *str){
+    uint8_t cad=50;
+    char c;
+    const char *in=str;
+    int i = 0;
+
+    c=UartGetchar(uart_num);
+    while (i < 50) {
+        if (c == '\n'){
+            break;
+        }
+        if(str < (in + cad - 1)){
+            *str = c;
+            str++;
+        }
+        c=UartGetchar(uart_num);
+        i++;
+    }
+    *str = 0;
+    str -= i;
+}
+
+uint32_t crc32b(char *message) {
+   int i, j;
+   unsigned int byte, crc, mask;
+   i = 0;
+   crc = 0xFFFFFFFF;
+   while (message[i]) {
+      byte = message[i];            // Get next byte.
+      crc = crc ^ byte;
+      for (j = 7; j >= 0; j--) {    // Do eight times.
+         mask = -(crc & 1);
+         crc = (crc >> 1) ^ (0xEDB88320 & mask);
+      }
+      i++; 
+   }
+   return ~crc;
+}
+
+void preprocessing_string_for_crc32(char *str, char *datos, uint8_t comando){
+    *str = CABECERA;
+    *(++str) = comando;
+    *(++str) = strlen(datos) + '0';    
+    while(*datos){
+        *(++str) = *(datos++);
+    }
+    *(++str) = FIN;
+    *(++str) = 0;
+}
+
+uint8_t package_validation(char *str, char *datos, char *comando){
+    int contador=0, data_length=0;
+    uint32_t crc_recibido = 0, crc_calculado;
+    char crc32_aux[13]; //MAX
+    if (str[0] != CABECERA){ 
+        return 0;
+    }else{ //COMANDO
+        if (str[1] != 0 && str[1] != 1 && str[1] != 2){
+            return 0;
+        } else { //LONGITUD
+            if (str[2] != '0') {
+                data_length =  str[2] - '0'; 
+                //DATOS
+                while (contador < data_length){
+                    datos[contador] = str[contador+3];
+                    contador++;
+                }
+                datos[contador] = '\0';
+                contador = 0;
+            } else{
+                data_length = 1;
+            }
+            if (str[data_length+3] != FIN){
+                return 0;
+            }else{
+                crc_recibido |= (str[data_length+4] | str[data_length+5] << 8 | str[data_length+6] << 16  | str[data_length+7] << 24);
+                preprocessing_string_for_crc32(crc32_aux, datos, str[1]);
+                crc_calculado = crc32b(crc32_aux);
+                if(crc_recibido!=crc_calculado){
+                    return 0;
+                }
+            }
+        }
+    }
+    *comando = str[1] + '0';
+    return 1;
+}
 
 void myItoa(uint16_t number, char* str, uint8_t base)
 {//convierte un valor numerico en una cadena de texto
@@ -80,102 +262,6 @@ void enviar_temperatura(char *cade){
     srand((unsigned int)time(NULL));
     int num = rand() % 100;
     myItoa(num, cade, 10);
-}
-
-static int _waitOrTimeout(uint16_t microSeconds, int level) {
-    int micros_ticks = 0;
-    while(gpio_get_level(dht_gpio) == level) { 
-        if(micros_ticks++ > microSeconds) 
-            return DHT11_TIMEOUT_ERROR;
-        ets_delay_us(1);
-    }
-    return micros_ticks;
-}
-
-static int _checkCRC(uint8_t data[]) {
-    if(data[4] == (data[0] + data[1] + data[2] + data[3]))
-        return DHT11_OK;
-    else
-        return DHT11_CRC_ERROR;
-}
-
-static void _sendStartSignal() {
-    gpio_set_direction(dht_gpio, GPIO_MODE_OUTPUT);
-    gpio_set_level(dht_gpio, 0);
-    ets_delay_us(20 * 1000);
-    gpio_set_level(dht_gpio, 1);
-    ets_delay_us(40);
-    gpio_set_direction(dht_gpio, GPIO_MODE_INPUT);
-}
-
-static int _checkResponse() {
-    /* Wait for next step ~80us*/
-    if(_waitOrTimeout(80, 0) == DHT11_TIMEOUT_ERROR)
-        return DHT11_TIMEOUT_ERROR;
-
-    /* Wait for next step ~80us*/
-    if(_waitOrTimeout(80, 1) == DHT11_TIMEOUT_ERROR) 
-        return DHT11_TIMEOUT_ERROR;
-
-    return DHT11_OK;
-}
-
-static struct dht11_reading _timeoutError() {
-    struct dht11_reading timeoutError = {DHT11_TIMEOUT_ERROR, -1, -1};
-    return timeoutError;
-}
-
-static struct dht11_reading _crcError() {
-    struct dht11_reading crcError = {DHT11_CRC_ERROR, -1, -1};
-    return crcError;
-}
-
-void DHT11_init(gpio_num_t gpio_num) {
-    /* Wait 1 seconds to make the device pass its initial unstable status */
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-    dht_gpio = gpio_num;
-}
-
-struct dht11_reading DHT11_read() {
-    /* Tried to sense too son since last read (dht11 needs ~2 seconds to make a new read) */
-    if(esp_timer_get_time() - 2000000 < last_read_time) {
-        return last_read;
-    }
-
-    last_read_time = esp_timer_get_time();
-
-    uint8_t data[5] = {0,0,0,0,0};
-
-    _sendStartSignal();
-
-    if(_checkResponse() == DHT11_TIMEOUT_ERROR)
-        return last_read = _timeoutError();
-    
-    /* Read response */
-    for(int i = 0; i < 40; i++) {
-        /* Initial data */
-        if(_waitOrTimeout(50, 0) == DHT11_TIMEOUT_ERROR)
-            return last_read = _timeoutError();
-                
-        if(_waitOrTimeout(70, 1) > 28) {
-            /* Bit received was a 1 */
-            data[i/8] |= (1 << (7-(i%8)));
-        }
-    }
-
-    if(_checkCRC(data) != DHT11_CRC_ERROR) {
-        last_read.status = DHT11_OK;
-        last_read.temperature = data[2];
-        last_read.humidity = data[0];
-        return last_read;
-    } else {
-        return last_read = _crcError();
-    }
-}
-
-void delayMs(uint16_t ms)
-{
-    vTaskDelay(ms / portTICK_PERIOD_MS);
 }
 
 static void event_handler(void* arg, esp_event_base_t event_base,
@@ -319,9 +405,21 @@ static void rest_post (char *data)
 void app_main(void)
 {
     int temp;
-    DHT11_init(GPIO_NUM_16);
 
-    /*//Initialize NVS
+    setDHTPin(4);
+    printf("Starting DHT measurement!\n");
+
+    uint8_t comando = 0x10;
+    uint32_t crc32_calculado;
+    char str_aux_for_crc32[13], paquete_recibido[MAX], datos_recibidos[5];
+    int com = 1;
+
+    struct paquete * package;
+
+    UartInit(0, UARTS_BAUD_RATE, 8, 0, 1, UART_TX_PIN,   UART_RX_PIN);
+    UartInit(2, UARTS_BAUD_RATE, 8, 0, 1, UART_TX_PIN_2, UART_RX_PIN_2);
+
+    //Initialize NVS
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
       ESP_ERROR_CHECK(nvs_flash_erase());
@@ -330,15 +428,31 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
-    wifi_init_sta();*/
+    wifi_init_sta();
 
     while (1)
     {
-        temp = DHT11_read().temperature;
-        myItoa(temp, temperatura, 10);
-        printf("Temperature is %d \n", temp);
-        printf("Temperature is %s \n", temperatura);
-        //rest_post(temperatura);
-        delayMs(1000);
+        //MANDAR
+        switch (com){ 
+            case 1: comando = '0';
+                break;
+            case 2: comando = '1';
+                break;
+            case 3: comando = '2';
+                break;
+            default: break;
+        }
+
+        preprocessing_string_for_crc32(str_aux_for_crc32, DEFAULT_DATA, comando);
+        crc32_calculado = crc32b(str_aux_for_crc32);
+        package = formar_paquete(CABECERA, comando, DEFAULT_LENGTH, DEFAULT_DATA, FIN, crc32_calculado); 
+        printf("\nComando: %x", comando);
+        UartPuts(2, package); 
+        com = com == 3 ? 1 : com + 1;
+
+        myItoa(getTemp(), temperatura, 10);
+        //printf("Temperature reading %s\n",temperatura);
+        rest_post(temperatura);
+        delayMs(3000);
     }
 }
