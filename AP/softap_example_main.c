@@ -27,7 +27,10 @@
 #define DEFAULT_LENGTH 0x34  // '4'
 #define DEFAULT_DATA "0000"
 
+int tempdes = 20;
+char paquete[13];
 char temperatura[4] = "35";
+char temperaturaDeseada[4] = "20";
 char estado [25] = "No encendido):";
 
 static const char *TAG = "softAP_WebServer";
@@ -123,14 +126,16 @@ void preprocessing_string_for_crc32(char *str, char *datos, uint8_t comando){
     *(++str) = 0;
 }
 
-uint8_t package_validation(char *str, char *datos, char *comando){
+uint8_t package_validation(char *str, char *datos, uint8_t *comando){
     int contador=0, data_length=0;
     uint32_t crc_recibido = 0, crc_calculado;
     char crc32_aux[13]; //MAX
     if (str[0] != CABECERA){ 
+        printf("Cabecera");
         return 0;
     }else{ //COMANDO
-        if (str[1] != 0 && str[1] != 1 && str[1] != 2){
+        if (str[1] != 0x10 && str[1] != 0x11 && str[1] != 0x12 && str[1] != 0x13){
+            printf("comando");
             return 0;
         } else { //LONGITUD
             if (str[2] != '0') {
@@ -152,12 +157,13 @@ uint8_t package_validation(char *str, char *datos, char *comando){
                 preprocessing_string_for_crc32(crc32_aux, datos, str[1]);
                 crc_calculado = crc32b(crc32_aux);
                 if(crc_recibido!=crc_calculado){
-                    return 0;
+                    //printf("crc32");
+                    //return 0;
                 }
             }
         }
     }
-    *comando = str[1] + '0';
+    *comando = str[1];
     return 1;
 }
 
@@ -243,6 +249,8 @@ static esp_err_t webserver_get_handler(httpd_req_t *req)
 
 esp_err_t post_handler(httpd_req_t *req)
 {
+    char datos[5];
+    uint8_t comando = 0x13;
     /* Destination buffer for content of HTTP POST request.
      * httpd_req_recv() accepts char* only, but content could
      * as well be any binary data (needs type casting).
@@ -250,9 +258,30 @@ esp_err_t post_handler(httpd_req_t *req)
      * content length would give length of string */
 
     /* Truncate if content length larger than the buffer */
-    size_t recv_size = MIN(req->content_len, sizeof(temperatura));
+    size_t recv_size = MIN(req->content_len, sizeof(paquete));
 
-    int ret = httpd_req_recv(req, temperatura, recv_size);
+    int ret = httpd_req_recv(req, paquete, recv_size);
+    if(package_validation(paquete, datos, &comando)){
+            ESP_LOGE(TAG, "\nComando: %c", comando);
+            ESP_LOGE(TAG, "paquete recibido!!\n");
+            if(comando == 0X10){
+                strcpy(estado, "No encendido");
+            }else if(comando == 0X11){
+                strcpy(estado, "Refrigeracion encendida");
+            }else if(comando == 0X12){
+                strcpy(estado, "Calefaccion encendida");
+            }else if (comando == 0x13)
+            {
+                if (datos[2] != '6')
+                {
+                    temperatura[0] = datos[2];
+                    temperatura[1] = datos[3];
+                }
+            }
+            
+        } else {
+            ESP_LOGI(TAG,"paquete malformado\n");
+        }
     if (ret <= 0) {  /* 0 return value indicates connection closed */
         /* Check if timeout occurred */
         if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
@@ -266,9 +295,10 @@ esp_err_t post_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
+    myItoa(tempdes, temperaturaDeseada, 10);
+
     /* Send a simple response */
-    const char resp[] = "URI POST Response";
-    httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send(req, temperaturaDeseada, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 
