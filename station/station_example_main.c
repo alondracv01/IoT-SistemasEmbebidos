@@ -375,12 +375,41 @@ void wifi_init_sta(void)
 
 esp_err_t client_event_get_handler (esp_http_client_event_handle_t evt)
 {
+    static char *output_buffer;  // Buffer to store response of http request from event handler
+    static int output_len; 
     switch (evt->event_id)
     {
     case HTTP_EVENT_ON_DATA:
         ESP_LOGI(TAG, "HTTP_EVENT_ON_DATA: %.*s\n", evt->data_len, (char *)evt->data);
+
+        if (!esp_http_client_is_chunked_response(evt->client)) {
+            // If user_data buffer is configured, copy the response into the buffer
+            if (evt->user_data) {
+                memcpy(evt->user_data + output_len, evt->data, evt->data_len);
+            } else {
+                if (output_buffer == NULL) {
+                    output_buffer = (char *) malloc(esp_http_client_get_content_length(evt->client));
+                    output_len = 0;
+                    if (output_buffer == NULL) {
+                        ESP_LOGE(TAG, "Failed to allocate memory for output buffer");
+                        return ESP_FAIL;
+                    }
+                }
+                memcpy(output_buffer + output_len, evt->data, evt->data_len);
+            }
+            output_len += evt->data_len;
+        }
         break;
-    
+    case HTTP_EVENT_ON_FINISH:
+        ESP_LOGD(TAG, "HTTP_EVENT_ON_FINISH");
+        if (output_buffer != NULL) {
+            // Response is accumulated in output_buffer. Uncomment the below line to print the accumulated response
+            // ESP_LOG_BUFFER_HEX(TAG, output_buffer, output_len);
+            free(output_buffer);
+            output_buffer = NULL;
+        }
+        output_len = 0;
+        break;
     default:
         break;
     }
@@ -389,12 +418,14 @@ esp_err_t client_event_get_handler (esp_http_client_event_handle_t evt)
 
 static void rest_post (char *data)
 {
+    char local_response_buffer[4] = {0};
     esp_http_client_config_t config_post ={
         .url = "http://192.168.4.1/proyecto",
         .method = HTTP_METHOD_POST,
         .event_handler = client_event_get_handler,
         .cert_pem = NULL,
         .is_async = true,
+        .user_data = local_response_buffer,
         .timeout_ms = 5000};
 
     esp_http_client_handle_t client = esp_http_client_init(&config_post);
@@ -407,12 +438,11 @@ static void rest_post (char *data)
         }
     }
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "HTTPS Status = %d, content_length = %d",
+            ESP_LOGI(TAG, "HTTPS Status = %d, content_length = %d",
                 esp_http_client_get_status_code(client),
                 esp_http_client_get_content_length(client));
-        //strcpy(temperaturaDeseada, esp_http_client_get_status_code(client));
-        //tempdes = myAtoi(temperaturaDeseada);
-        //ESP_LOGE(TAG, "Temperatura deseada %d", tempdes);
+            strcpy(temperaturaDeseada, local_response_buffer);
+            tempdes = myAtoi(temperaturaDeseada);
     } else {
         ESP_LOGE(TAG, "Error perform http request %s", esp_err_to_name(err));
     }
@@ -430,7 +460,7 @@ void app_main(void)
     uint8_t comando = 0x10;
     uint32_t crc32_calculado;
     char str_aux_for_crc32[13], paquete_recibido[MAX], datos_recibidos[5];
-    int com = 1;
+    int tempera = 0;
 
     struct paquete * package;
 
@@ -450,42 +480,34 @@ void app_main(void)
 
     while (1)
     {
-        /*if (tempdes == getTemp())
+        tempera = getTemp();
+        if (tempera <= 50 && tempera >= 0)
         {
-            comando = 0x10;
-        } else if (tempdes < getTemp())
-        {
-            comando = 0x11;
-        } else{
-            comando = 0x12;
-        }*/
-        
-        
-        //MANDAR
-        switch (com){ 
-            case 1: comando = 0x10;
-                break;
-            case 2: comando = 0x11;
-                break;
-            case 3: comando = 0x12;
-                break;
-            default: break;
+            if (tempdes == tempera)
+            {
+                comando = 0x10;
+            } else if (tempdes < tempera)
+            {
+                comando = 0x11;
+            } else{
+                comando = 0x12;
+            }
         }
 
         preprocessing_string_for_crc32(str_aux_for_crc32, DEFAULT_DATA, comando);
         crc32_calculado = crc32b(str_aux_for_crc32);
         package = formar_paquete(CABECERA, comando, DEFAULT_LENGTH, DEFAULT_DATA, FIN, crc32_calculado); 
         UartPuts(2, package);
-        printf("\nComando: %x\n", comando); 
-        com = com == 3 ? 1 : com + 1;
+        printf("\nComando: %x\n", comando);
         
-        myItoa(getTemp(), temperatura, 10);
+        myItoa(tempera, temperatura, 10);
         preprocessing_string_for_crc32(str_aux_for_crc32, temperatura, 0x13);
         crc32_calculado = crc32b(str_aux_for_crc32);
         temp[2] = temperatura[0];
         temp[3] = temperatura[1];
         package = formar_paquete(CABECERA, 0x13, DEFAULT_LENGTH, &temp, FIN, crc32_calculado);
-        printf("Temperature reading %s\n",temperatura);
+        printf("Temperatura deseada: %s\n",temperaturaDeseada);
+        printf("Temperatura leida:  %s\n",temperatura);
         rest_post(package);
         delayMs(3000);
     }
