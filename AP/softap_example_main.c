@@ -27,7 +27,7 @@
 #define DEFAULT_LENGTH 0x34  // '4'
 #define DEFAULT_DATA "0000"
 
-int tempdes = 20;
+int tempdes = 14;
 char paquete[13];
 char temperatura[4] = "35";
 char temperaturaDeseada[4] = "20";
@@ -190,9 +190,11 @@ static esp_err_t resp_dir_html(httpd_req_t *req)
                         "<td style=\"padding:30px;vertical-align:top;\">"
                         "<h3>Estado deseado en la habitacion</h3>"
                         "<label for=\"comandos\">Temperatura deseada en la habitacion:</label><br><br>"
-                        "<form method='get'>"
-                        "<input type=\"number\" id=\"fname\" name=\"fname\" style=\"background-color:#FFF0F5;border-color:#FFC0CB;\"><br><br>"
-                        "<button type=\"submit\" onclick='dirigir(this.form)' style=\"background-color:#FF69B4;border-color:#FF69B4;\">Enviar comando</button><br><br>"
+                        "<form>"
+                        "<button class=\"ButtonR Button\" style=\"background-color:#FF69B4;border-color:#FF69B4;\">");
+    httpd_resp_sendstr_chunk(req, temperaturaDeseada);
+    httpd_resp_sendstr_chunk(req,
+                        "</button><br><br>"
                         "</form>"
                         "</td>"
                         "<td style=\"padding:30px;vertical-align:top;\">"
@@ -216,25 +218,6 @@ static esp_err_t resp_dir_html(httpd_req_t *req)
                             "setTimeout(function(){"
                                 "window.location.reload(1);"
                             "}, 5000);"
-                            "function dirigir(form)"
-                            "{"
-                                "if(form.comandos.value=='1')"
-                                "{"
-                                    "window.open('./0x10')"
-                                "}else if(form.comandos.value=='2')"
-                                "{"
-                                    "window.open('./0x11')"
-                                "}else if(form.comandos.value=='3')"
-                                "{"
-                                    "window.open('./0x12')"
-                                "}else if(form.comandos.value=='4')"
-                                "{"
-                                    "window.open('./0x13')"
-                                "}else"
-                                "{"
-                                    "window.open('./hello')"
-                                "}"
-                            "}"
                         "</script>"
                         "</body>"
                         "</html>");
@@ -262,7 +245,7 @@ esp_err_t post_handler(httpd_req_t *req)
 
     int ret = httpd_req_recv(req, paquete, recv_size);
     if(package_validation(paquete, datos, &comando)){
-            ESP_LOGE(TAG, "\nComando: %c", comando);
+            ESP_LOGE(TAG, "\nComando: %x", comando);
             ESP_LOGE(TAG, "paquete recibido!!\n");
             if(comando == 0X10){
                 strcpy(estado, "No encendido");
@@ -295,10 +278,9 @@ esp_err_t post_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    myItoa(tempdes, temperaturaDeseada, 10);
-
     /* Send a simple response */
     httpd_resp_send(req, temperaturaDeseada, HTTPD_RESP_USE_STRLEN);
+    ESP_LOGI(TAG, "Temperatura mandada: %s", temperaturaDeseada );
     return ESP_OK;
 }
 
@@ -496,4 +478,12 @@ void app_main(void)
     ESP_ERROR_CHECK(wifi_init_softap());
 
     server = start_webserver();
+
+    while (1)
+    {
+        tempdes = tempdes == 30 ? 15 : tempdes + 1;
+        myItoa(tempdes, temperaturaDeseada, 10);
+        delayMs(5000);
+    }
+    
 }
